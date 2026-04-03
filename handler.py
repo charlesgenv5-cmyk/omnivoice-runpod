@@ -8,62 +8,57 @@ from omnivoice import OmniVoice
 
 print("Initialisation du conteneur et chargement du modèle...")
 
-# Chargement du modèle au démarrage (hors de la fonction handler pour ne le faire qu'une fois)
 try:
     model = OmniVoice.from_pretrained(
         "k2-fsa/OmniVoice", 
         device_map="cuda:0", 
         dtype=torch.float16
     )
-    print("Modèle OmniVoice chargé avec succès sur le GPU.")
+    print("Modèle OmniVoice chargé.")
 except Exception as e:
-    print(f"Erreur critique lors du chargement du modèle: {e}")
+    print(f"Erreur modèle: {e}")
 
 def handler(job):
-    """
-    Fonction principale appelée par RunPod à chaque nouvelle requête.
-    """
     try:
         job_input = job.get('input', {})
         text = job_input.get("text", "")
-        instruct = job_input.get("instruct", "") # Ex: "female, low pitch"
+        instruct = job_input.get("instruct", "")
+        ref_audio_b64 = job_input.get("ref_audio_b64", "") # Le fameux fichier audio de clonage !
         
-        # Vérification de sécurité
         if not text:
-            return {"status": "error", "message": "Le champ 'text' est vide ou manquant."}
+            return {"status": "error", "message": "Le texte est manquant."}
 
-        print(f"Génération en cours pour : '{text[:30]}...'")
-
-        # Paramètres dynamiques pour OmniVoice
         kwargs = {"text": text}
         if instruct:
             kwargs["instruct"] = instruct
 
-        # Génération de l'audio
+        # --- GESTION DU CLONAGE VOCAL ---
+        if ref_audio_b64:
+            ref_path = "/tmp/reference.wav" # On crée un fichier temporaire sur RunPod
+            with open(ref_path, "wb") as f:
+                # On nettoie l'entête envoyée par le HTML et on décode l'audio
+                clean_b64 = ref_audio_b64.split(",")[-1] 
+                f.write(base64.b64decode(clean_b64))
+            
+            # On indique à OmniVoice d'utiliser ce fichier temporaire
+            kwargs["ref_audio"] = ref_path
+            # Note: Pas besoin de 'ref_text', OmniVoice utilise Whisper en interne pour le deviner !
+
+        # Génération
         audio_tensor = model.generate(**kwargs)
         
-        # Sauvegarde de l'audio en mémoire vive (RAM)
+        # Renvoi de l'audio vers ton PC
         buffer = io.BytesIO()
         torchaudio.save(buffer, audio_tensor[0], 24000, format="wav")
-        
-        # Encodage en Base64 pour le retour API
         audio_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
         
         return {
             "status": "success", 
-            "audio_base64": audio_base64,
-            "message": "Audio généré avec succès."
+            "audio_base64": audio_base64
         }
 
     except Exception as e:
-        # En cas de crash, on renvoie l'erreur exacte pour faciliter ton "vibe coding"
         error_trace = traceback.format_exc()
-        print(f"Erreur lors de la génération: {error_trace}")
-        return {
-            "status": "error", 
-            "message": str(e), 
-            "trace": error_trace
-        }
+        return {"status": "error", "message": str(e), "trace": error_trace}
 
-# Lancement du serveur RunPod
 runpod.serverless.start({"handler": handler})
