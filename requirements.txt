@@ -1,0 +1,6 @@
+runpod==1.6.2
+omnivoice
+torch
+torchaudio
+whisperx
+pydub
